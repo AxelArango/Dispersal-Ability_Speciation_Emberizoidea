@@ -1,0 +1,270 @@
+---
+title: "Cor-STRATES"
+author: "Axel Arango"
+date: "2022-11-03"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+This is the code to perform the framework correlated speciation and trait rates simulation (Cor-STRATES), proposed in:
+Cooney, C.R., Thomas, G.H. Heterogeneous relationships between rates of speciation and body size evolution across vertebrate clades. Nat Ecol Evol 5, 101–110 (2021). https://doi.org/10.1038/s41559-020-01321-y
+
+Cor-STRATES aims to diminish the errors and biases that could negatively impact the results the relationship between specation rates and trait evolutionary rates.
+
+
+This framework is done in three parts:
+  -Speciation rate calculation
+  -Trait evolutionary rate calculation
+  -Simulations and correlations
+
+#1) Speciation rate calculation
+
+This first part (Speciation rate calculation), can be done in different ways and methods. However, Cooney & Thomas recommend the use of speciation rates obtained from BAMM, but they also mention that the DR measure could also be useful for small trees (~150 tips). They do not test ClaDS, but they conclude that could be as robust as using BAMM.
+
+For Cor-STRATES we will use the *Average branch length* of the speciation rates for BAMM.
+
+Firs, we will load the necessary packages: 
+
+```{r, eval= T, include=T,warning=FALSE}
+library(BAMMtools)
+library(phytools)
+library(geiger)
+
+
+```
+
+Then the necessary data:
+
+```{r, eval=T,include=T}
+embtree<-read.tree("MCC_corrected_hwipruned.tre") #the phylogenetic tree (already pruned)
+embtrait<-read.table("HWI_data_cap3_div.txt",header=F,sep="\t");names(embtrait)<-c("sp","hwi") 
+# the HWI measurements (dispersal ability proxy) for our species
+```
+
+We also are importing the event data file from BAMM, previously calculated.
+
+```{r, eval=T, include=T}
+edata<-getEventData(phy = embtree,"BAMM_event_emberizo_capitulo3.txt",burnin = 0.1)
+```
+
+Once you have the event data, Cor-STRATES suggests that we should obtain branch lengths as the value for speciation rates in the case of BAMM. 
+
+Obtain them as follows:
+
+```{r, eval=T,include=T}
+meanbranchtree<-getMeanBranchLengthTree(edata,rate = "speciation")
+
+
+meanbranchrates<-meanbranchtree$phy$edge.length
+head(meanbranchrates) #these would be the speciation rates for branch for Emberizoidea
+```
+
+
+#2) Trait evolutionary rate calculation
+
+For obtaining the phenotypic evolutionary rates, Cor-STRATES suggests that, first, we need to calculate the phylogenetic signal of the attribute of interest using _Pagel's lambda_.
+
+To do so, we will emply the _phylosig_ function from phytools.
+
+```{r, eval=T, include=TRUE,warning=FALSE}
+lambda<-phylosig(embtree,embtrait$hwi,method = "lambda",test = T,nsim = 1000)
+lambda
+```
+
+With the _lambda_ value obtained, we would use it to reescalate the phylogenetic tree.
+
+```{r, eval=TRUE,include=TRUE}
+rescalelambda<-rescale(embtree,model="lambda",lambda$lambda)
+par(mfrow=c(1,2))
+plot(embtree,show.tip.label =F,type = "fan",main="MCC phylogeny")
+plot(rescalelambda,show.tip.label = F,type = "fan",main="Lambda phylogeny")
+```
+
+Now we can save the reescaleted phylogeny for future uses:
+```{r, eval=F,include=TRUE}
+write.tree(rescalelambda,"lambdatree.tre")
+
+```
+
+Using the phylogeny rescaled with lambda values, the models for phenotypic evolution will be fitted, either with _BAMM_ or _BayesTraits_
+
+To do this with _BAMM_, we will first calculate the priors. Priors for phenotypic evolution should include the observed values of the trait, so we need to load or fit them as a named vector first
+
+```{r, eval=F,include=TRUE}
+phenotrait<-embtrait$hwi#named vector object
+names(phenotrait)<-embtrait$sp
+phenoprior<-setBAMMpriors(phy = rescalelambda,832,traits =phenotrait,outfile = NULL )
+
+```
+
+Once the priors are calculated, we can proceed to create a control file to perform the phenotypic _BAMM_:
+
+```{r, eval=F,include=TRUE}
+
+generateControlFile(file = "lambdacontrol.txt",type = "trait", params = list(
+  treefile = 'lambdatree.tre',
+  traitfile= 'HWI_data_cap3_div.txt',
+    seed= '-1',
+  eventDataOutfile= 'eventrait.txt',
+    numberOfGenerations = '100000',
+    overwrite = '1',
+    betaInitPrior = as.numeric(phenoprior['betaInitPrior']),
+     betaShiftPrior  = as.numeric(phenoprior['betaShiftPrior']),
+    ObservedMinMaxAsTraitPriors = as.numeric(phenoprior['ObservedMinMaxAsTraitPriors']),
+    expectedNumberOfShifts = '1',
+  chainSwapFileName='chain_swap_trait.txt',
+  mcmcOutfile='mcmc_out_trait.txt'))
+
+```
+
+With this control file we can now perform a phenotypic _BAMM_.
+
+To use BayesTraits for the calculation of the phenotypic evolutionary rate, this has to be done outside of R. See: http://www.evolution.reading.ac.uk/BayesTraitsV4.0.0/BayesTraitsV4.0.0.html.
+
+Now, since we are using _BAMM_, we can load the new phenotypic event data previously calculated using the generated control file.
+
+```{r,eval=TRUE,include=TRUE}
+
+tdata<-getEventData(phy = rescalelambda,"eventrait.txt",burnin = 0.1,type = 'trait')
+
+
+```
+
+Once the phenotypic 'event data' object is loaded, we will proceed to calculate the average branch length to obtain the trait evolution rate, same as we did with the speciation rates:
+
+```{r, eval=TRUE,include=TRUE}
+traitbranchtree<-getMeanBranchLengthTree(tdata,rate = "trait")
+
+
+traitranchrates<-traitbranchtree$phy$edge.length
+head(traitranchrates)
+
+```
+
+With both the speciation rate and phenotypic evolutionary rate, we will do a spearman correlation between both rates.
+
+We would use spearman correlation due to the highly non-normal distribution of the rate values:
+
+Cooney & Thomas (2021) say: _"We used Spearman’s rank correlation (Rho) to measure the association between rates because the distribution of estimated speciation and/or trait rates is often highly non-normal, even after log transformation, which makes applying parametric statistics such as Pearson’s r problematic"._
+
+```{r, eval=TRUE,include=TRUE,warning=FALSE}
+obs.cor<-cor.test(log(meanbranchrates),log(traitranchrates),method = "spearman")
+obs.cor
+```
+ Now we can plot it
+
+```{r, eval=TRUE,include=T}
+plot(log(meanbranchrates),log(traitranchrates),xlab="log speciation rate",ylab=("log phenotipic rate"),pch=16)
+```
+
+And compare both rates in the phyologeny:
+
+```{r, eval=TRUE,include=TRUE}
+par(mfrow=c(1,2),mar=c(3,0,3,0),xpd=T)
+plotedata<-plot.bammdata(edata,lwd=2,direction = "rightwards")
+addBAMMlegend(plotedata,location = "bottom")
+legend("bottomright",inset=c(0,1),legend = "speciation rate",box.lwd = 0)
+plottdata<-plot.bammdata(tdata,lwd=2,direction="leftwards")
+addBAMMlegend(plottdata,location = "bottom",)
+legend("bottomleft",inset=c(0,1),legend="phenotipic rate",box.lwd=0)
+```
+
+#Simulación de datasets nulos
+
+Once we got the observed correlation between the specation and the phenotypic evolutionary rate, we will create null datasets simulating dispersal ability values. After this, we will adjust models of phenotypic evolution, to finally test the significance between the observed relationship and the null relationships.
+
+Cor-STRATES uses datasets simulated under Brownian Motion (BM). To recreate them, we will first adjust a BM model to the trait of interest, using the reescaled phylogeny.
+
+```{r, eval=TRUE,include=TRUE}
+trait<-embtrait$hwi
+names(trait)<-embtrait$sp
+HWIBM<-fitContinuous(rescalelambda,trait,model = "BM")
+```
+
+Then, we will use the sigma squared value from the BM adjusted model, to simulate the attribute value for a 100 datasets.
+
+```{r, eval=TRUE,include=TRUE}
+sigsqz<-HWIBM$opt$sigsq
+simus<-sim.char(rescalelambda,sigsqz,nsim=100,model="BM")
+```
+
+Finayll, we will write every simulation on independendent files, with the goal to use them to adjust models of phenotypic evolution using BAMM.
+
+```{r, eval=F,include=TRUE,warning=FALSE}
+setwd("BM_sim/")
+for(i in 1:100){
+  simx<-simus[,,i]
+  simx2<-as.data.frame(simx)
+  names(simx2)<-NULL
+  write.table(simx2,paste("BMSIM",i,".txt",sep = ""),sep="\t",col.names = F,row.names = T,quote = F)
+  
+}
+```
+
+Using these datasets of simulated attributes, we calculate the phenotypic evolutionary rates, using the same BAMM protocols that the ones from the observed phenotypic evolutionary rate.
+
+We should have (in this particular case) 100 Event Data files for phenotypic evolution, which are going to be used to calculate the null correlations.
+
+
+```{r, eval=F,include=T}
+nullcors<-data.frame()
+
+#nullrates<-data.frame()
+for (i in 1:100){
+  sdata<-getEventData(phy = rescalelambda,paste0("Sims/ES",i,".txt"),burnin = 0.1,type = 'trait',verbose = F) #here we first load the simulated trait event data
+  print(i)
+  simbranchtree<-getMeanBranchLengthTree(sdata,rate = "trait") #we aquire its phenotypic evolutionary rate
+  simbranchrates<-simbranchtree$phy$edge.length #we extract such rates
+  ncor<-cor.test(log(meanbranchrates),log(simbranchrates),method = "spearman") #correlate the observed speciation rates with the simulated phenotypic evolutionary rates 
+  nrho<-ncor$estimate #save the estimated value for Rho
+  print(nrho)
+  names(nrho)<-"Rho"
+  nullcors<-rbind(nullcors,nrho)
+  
+  
+}
+sim.cor<-nullcors
+names(sim.cor)<-"Rho"
+
+
+```
+
+```{r, eval=T,include=F}
+#Given that this is a lengthy and time-consuming process, we can load the file with such correlations already computated:
+sim.cor<-read.table("sim.cor.txt",header=T,sep="\t")
+```
+
+Finally we calculate the p value of the observed correlation in comparison with the null correlations acquired using simulated data.
+
+```{r, eval=TRUE,include=T}
+sim.corx<-sim.cor$Rho
+sims<-100
+upper <- (length(sim.corx[sim.corx >= obs.cor$estimate])+1)/(sims+1)
+  lower <- (length(sim.corx[sim.corx <= obs.cor$estimate])+1)/(sims+1)
+  pval <- 2*min(c(upper,lower)) 
+  if (pval == 0) { pval <- 2*(1/sims) }
+  cis <- quantile(sim.corx, probs = c(0.025, 0.975))
+  ses <- (obs.cor$estimate - mean(sim.corx)) / sd(sim.corx)
+  out <- c(obs.cor$estimate, mean(sim.corx), cis[1], cis[2], pval, ses)
+  names(out) <- c("obs.cor", "sim.cor.mean", "sim.cor.lci", "sim.cor.uci", "pval", "ses")
+  
+
+
+out
+```
+
+
+Unfortunately, it seems that the phenotypic evolution rate, despite being correlated with speciation, is not different from what would be expected by Brownian motion.
+
+We can plot the distribution of the null correlations and the value of the observed correlation to corroborate.
+
+```{r, eval=TRUE,include=TRUE}
+hist(sim.cor$Rho,main="0.28 CI(-0.39,0.31)",xlab="Spearman's Rho",col="#B4DCDA")
+abline(v=0.28,col="#848484",lwd=2)
+legend(x="topright",legend = c("Observed correlation", "Null correlations"),
+       pch = 15,cex=1, col= c("#848484","#B4DCDA"),box.col = "white")
+```
