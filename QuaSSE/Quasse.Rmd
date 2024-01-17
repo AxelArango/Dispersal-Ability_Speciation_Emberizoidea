@@ -1,0 +1,176 @@
+---
+title: "QuaSSE"
+author: "Axel Arango"
+date: "2024-01-17"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This is the code to perform the Quantitative State-dependent Speciation and Extinction (QuaSSE) models, first proposed in: FitzJohn, R. G. (2010). Quantitative traits and diversification. Systematic biology, 59(6), 619-633.
+
+
+QuaSSE models are used to test the influence of a continous trait with speciation.
+
+To perform such models we first will need to load the required packages:
+
+```{r, eval= T, include=T,warning=FALSE}
+library(diversitree)
+library(caper)
+library(phytools)
+```
+
+After we have loaded the packages, now we will need the phylogenetic and trait data for our species.
+
+```{r, eval= T, include=T,warning=FALSE}
+phy<-read.tree("hwi_tree.txt")
+hwi<-read.table("hwi_data.txt",sep="\t")
+head(hwi)
+```
+
+Now, need a starting point for the models to start looking for the maximum likelihood. This will require the phylogenetic data, a named vector with trait values for our species and the standard deviation of such trait values.
+
+We already have the phylogenetic data, but now we have to transform our trait data into a named vector, and calculate the standard deviation of the trait values.
+
+First the transformation
+
+```{r, eval= T, include=T,warning=FALSE}
+states<-hwi$hwi
+names(states)<-row.names(hwi)
+head(states)
+```
+
+And now the trait values standard deviation
+
+```{r, eval= T, include=T,warning=FALSE}
+sx<-sd(states)
+sx
+```
+
+With this, we can calculate the starting point for the likelihood function to find the maximum likelihood.
+
+```{r, eval= T, include=T,warning=FALSE}
+p<-starting.point.quasse(phy,states,sx)
+p
+```
+
+Now we create a function to calculate a linear relationship, this would provide us with a  minimal set of state-varying functions, useful for the model computation.
+
+```{r, eval= T, include=T,warning=FALSE}
+xr <- range(states) + c(-1,1) * 20 * p["diffusion"]
+linear.x <- make.linear.x(xr[1], xr[2])
+```
+
+In order to make easier setting up multiple models, we can create a function that considers the estimated propoprtion of extant species included in the analysis (sampling fraction), takes the phylogenetic and trait data and only varies with the type of relationship for both speciation and extinction.
+
+```{r, eval= T, include=T,warning=FALSE}
+make.hwi <- function(lambda, mu)
+  make.quasse(phy, states,sx,sampling.f=0.89, lambda, mu)
+```
+
+And, since our first models are going to be the simple ones, we are going to set a function to constrain the drift value (Evolutinary directional tendency of the trait) to 0.
+
+```{r, eval= T, include=T,warning=FALSE}
+nodrift <- function(f)
+  constrain(f, drift ~ 0)
+```
+
+With these we can create the QuaSSE models. While the function we made can admit varying values of both speciation and extinction, right now we only care about the influence of the trait in speciation, so we are going to leave extinction as constant while crerating the likelihood functions.
+
+```{r, eval= T, include=T,warning=FALSE}
+#model where trait does not have influence in neither speciation or extinction
+f.c <- make.hwi(constant.x, constant.x)
+#model where the influence of the trait in speciation is linear
+f.l <- make.hwi(linear.x, constant.x)
+#model where the influence of the trait in speciation has a turning point
+f.s <- make.hwi(sigmoid.x, constant.x)
+#model where the influence of the trait in speciation 
+#is optimal at intermediate values
+f.h <- make.hwi(noroptimal.x, constant.x)
+```
+
+Having this likelihood functions, we can set up our first QuaSSE model, which is going to be our null model, where the trait had no relationship with speciation (constant model)
+
+However, since this models can take a long time to find the maximum likelihood, we can import the previously calculated. The upcoming steps were exactly the same while calculating them, we are just skipping the likelihood search.
+```{r, eval= T, include=T,warning=FALSE}
+load("Quasse_v3.RData")
+```
+
+```{r, eval= F, include=T,warning=FALSE}
+#we set up a control object to help us find the maximum likelihood
+control <- list(parscale=.1, reltol=0.001)
+#find.mle finds the maximum likelihood for our data 
+#depending on the likelihood function
+#see that we have added the drift constrain, 
+#the constant function and the starting parameters
+mle.c <- find.mle(nodrift(f.c), p, lower=0, control=control,
+                  verbose=0)
+```
+
+With our Null model out, we can extract the constant parameters for the parameter estimation of the other models.
+
+```{r, eval= T, include=T,warning=FALSE}
+p.c <- mle.c$par
+p.c
+```
+
+In case of the linear model, the slope parameter
+
+```{r, eval= T, include=T,warning=FALSE}
+p.l <- c(p.c[1], l.m=0, p.c[2:3])
+p.l
+```
+
+For the sigmoidal and the hump model we add the parameters for the minimum and maximum values of lambda, along with the inflexion point for the sigmoidal model and the optimal values for the hump model.
+
+```{r, eval= T, include=T,warning=FALSE}
+p.l <- c(p.c[1], l.m=0, p.c[2:3])
+p.s <- p.h <- c(p.c[1], p.c[1], mean(xr), 1, p.c[2:3])
+names(p.s) <- argnames(nodrift(f.s))
+names(p.h) <- argnames(nodrift(f.h))
+print(c(p.s,p.h))
+```
+
+Having set up these parameters, we can now run our models where we test the influence and the type of relationship that the trait has on speciation rates
+
+
+```{r, eval= F, include=T,warning=FALSE}
+mle.l <- find.mle(nodrift(f.l), p.l, control=control, verbose=0)
+mle.s <- find.mle(nodrift(f.s), p.s, control=control, verbose=0)
+mle.h <- find.mle(nodrift(f.h), p.h, control=control, verbose=0)
+```
+
+Having found the maximum likelihood for all our likelihood functions, we can do a likelihoo ratio test to see if they are significatively different from the null model:
+
+```{r, eval= T, include=T,warning=FALSE}
+anova(mle.c, linear=mle.l, sigmoidal=mle.s, hump=mle.h)
+```
+
+Let's see the parameter estimates for the best model
+
+```{r, eval= T, include=T,warning=FALSE}
+mle.h$par
+```
+
+Since the only model that showed to be significatively different from the null model was the unimodal model, we can add the drift parameter and compare them. Furthermore, this pararamter will help us determine the directionial trend in which the trait value is evolving to.
+
+```{r, eval= F, include=T,warning=FALSE}
+mle.d.h <- find.mle(f.h, coef(mle.h, TRUE), control=control, verbose=0)
+```
+
+Let's find out the differences when including the drift in the model
+
+```{r, eval= T, include=T,warning=FALSE}
+
+anova(mle.c, linear=mle.l, sigmoidal=mle.s, hump=mle.h,
+      drift.hump=mle.d.h)
+```
+
+And how the estimation of the drift parameter affects the rest of the parameter for the unimodal QuaSSE model
+
+```{r, eval= T, include=T,warning=FALSE}
+
+mle.d.h$par
+```
