@@ -123,7 +123,7 @@ p.l <- c(p.c[1], l.m=0, p.c[2:3])
 p.l
 ```
 
-For the sigmoidal and the hump model we add the parameters for the minimum and maximum values of lambda, along with the inflexion point for the sigmoidal model and the optimal values for the hump model.
+For the sigmoidal and the hump model we add the parameters for the minimum and maximum values of lambda, along with the inflexion point for the sigmoidal model and the optimal values for the hump model (if so, omit the code chuns that say eval=F).
 
 ```{r, eval= T, include=T,warning=FALSE}
 p.l <- c(p.c[1], l.m=0, p.c[2:3])
